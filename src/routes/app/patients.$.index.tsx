@@ -3,6 +3,12 @@ import {
   softDeletePatientsByIds,
 } from "@/lib/server-functions/patients";
 import { getPatientVitals } from "@/lib/server-functions/vitals";
+import {
+  getPatientVisits,
+  type VisitWithEvents,
+} from "@/lib/server-functions/visits";
+import { getPatientPrescriptions } from "@/lib/server-functions/prescriptions";
+import { getPatientProblems } from "@/lib/server-functions/patient-problems";
 import { createFileRoute, redirect, useRouter } from "@tanstack/react-router";
 import { toast } from "sonner";
 import {
@@ -17,34 +23,34 @@ import { Separator } from "@/components/ui/separator";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import {
-  Calendar,
-  Phone,
-  MapPin,
-  Heart,
-  Activity,
-  Thermometer,
-  Droplets,
-  Wind,
-  Brain,
-  Ruler,
-  Weight,
-  LucideUser,
-} from "lucide-react";
+import { Calendar, Phone, MapPin, LucideUser } from "lucide-react";
 import { format } from "date-fns";
 import type PatientVital from "@/models/patient-vital";
 import type Patient from "@/models/patient";
 import Appointment from "@/models/appointment";
 import type Prescription from "@/models/prescription";
-import { useEffect, useState } from "react";
+import type PatientProblem from "@/models/patient-problem";
+import { useEffect, useState, useCallback } from "react";
 import { getAppointmentsByPatientId } from "@/lib/server-functions/appointments";
 import type Clinic from "@/models/clinic";
 import type User from "@/models/user";
+import type { Pagination } from "@/lib/server-functions/builders";
+import { PatientVitalsCard } from "@/components/patient/PatientVitalsCard";
+import { RecentVisitsList } from "@/components/patient/RecentVisitsList";
+import { PrescriptionsList } from "@/components/patient/PrescriptionsList";
+import { PatientProblemsList } from "@/components/patient/PatientProblemsList";
 
 export const Route = createFileRoute("/app/patients/$/")({
   component: RouteComponent,
   loader: async ({ params }) => {
     const patientId = params["_splat"];
+
+    const emptyPagination: Pagination = {
+      offset: 0,
+      limit: 10,
+      total: 0,
+      hasMore: false,
+    };
 
     const result: {
       patient: Patient.EncodedT | null;
@@ -55,12 +61,22 @@ export const Route = createFileRoute("/app/patients/$/")({
         clinic: Clinic.EncodedT;
         provider: User.EncodedT;
       }[];
+      visits: VisitWithEvents[];
+      visitsPagination: Pagination;
       prescriptions: Prescription.EncodedT[];
+      prescriptionsPagination: Pagination;
+      problems: PatientProblem.EncodedT[];
+      problemsPagination: Pagination;
     } = {
       patient: null,
       vitals: [],
       appointments: [],
+      visits: [],
+      visitsPagination: emptyPagination,
       prescriptions: [],
+      prescriptionsPagination: emptyPagination,
+      problems: [],
+      problemsPagination: emptyPagination,
     };
     if (!patientId || patientId === "new") {
       return result;
@@ -75,22 +91,58 @@ export const Route = createFileRoute("/app/patients/$/")({
 
       result.patient = patient;
 
-      const { data, error } = await getAppointmentsByPatientId({
-        data: { patientId },
-      });
-      error && console.error(error);
-      result.appointments = data || [];
+      // Fetch appointments, visits, prescriptions, problems, and vitals in parallel
+      const [
+        appointmentsRes,
+        visitsRes,
+        prescriptionsRes,
+        problemsRes,
+        vitals,
+      ] = await Promise.all([
+        getAppointmentsByPatientId({ data: { patientId } }).catch((e) => {
+          console.error("Failed to fetch appointments:", e);
+          return { data: [], error: e };
+        }),
+        getPatientVisits({
+          data: { patientId, limit: 10, offset: 0, includeEvents: true },
+        }).catch((e) => {
+          console.error("Failed to fetch visits:", e);
+          return {
+            items: [] as VisitWithEvents[],
+            pagination: emptyPagination,
+            error: e,
+          };
+        }),
+        getPatientPrescriptions({
+          data: { patientId, limit: 10, offset: 0 },
+        }).catch((e) => {
+          console.error("Failed to fetch prescriptions:", e);
+          return { items: [], pagination: emptyPagination, error: e };
+        }),
+        getPatientProblems({
+          data: { patientId, limit: 5, offset: 0 },
+        }).catch((e) => {
+          console.error("Failed to fetch problems:", e);
+          return {
+            items: [] as PatientProblem.EncodedT[],
+            pagination: emptyPagination,
+            error: e,
+          };
+        }),
+        getPatientVitals({ data: { patientId } }).catch((e) => {
+          console.error("Failed to fetch vitals:", e);
+          return [] as PatientVital.EncodedT[];
+        }),
+      ]);
 
-      // Get patient vitals
-      try {
-        const fetchedVitals = await getPatientVitals({
-          data: { patientId },
-        });
-        console.log({ fetchedVitals });
-        result.vitals = fetchedVitals || [];
-      } catch (error) {
-        console.error("Failed to fetch vitals:", error);
-      }
+      result.appointments = appointmentsRes.data || [];
+      result.visits = visitsRes.items;
+      result.visitsPagination = visitsRes.pagination;
+      result.prescriptions = prescriptionsRes.items;
+      result.prescriptionsPagination = prescriptionsRes.pagination;
+      result.problems = problemsRes.items;
+      result.problemsPagination = problemsRes.pagination;
+      result.vitals = vitals || [];
 
       return result;
     } catch (error) {
@@ -105,7 +157,12 @@ function RouteComponent() {
     patient,
     vitals: initialVitals,
     appointments,
-    prescriptions,
+    visits: initialVisits,
+    visitsPagination: initialVisitsPag,
+    prescriptions: initialPrescriptions,
+    prescriptionsPagination: initialRxPag,
+    problems: initialProblems,
+    problemsPagination: initialProblemsPag,
   } = Route.useLoaderData();
   const params = Route.useParams();
   const navigate = Route.useNavigate();
@@ -116,11 +173,98 @@ function RouteComponent() {
     typeof PatientVital.PatientVitalSchema.Encoded | null
   >(null);
 
+  // Visits pagination state
+  const [visits, setVisits] = useState(initialVisits);
+  const [visitsPag, setVisitsPag] = useState(initialVisitsPag);
+  const [visitsLoading, setVisitsLoading] = useState(false);
+
+  // Prescriptions pagination state
+  const [prescriptions, setPrescriptions] = useState(initialPrescriptions);
+  const [rxPag, setRxPag] = useState(initialRxPag);
+  const [rxLoading, setRxLoading] = useState(false);
+
+  // Problems pagination state
+  const [problems, setProblems] = useState(initialProblems);
+  const [problemsPag, setProblemsPag] = useState(initialProblemsPag);
+  const [problemsLoading, setProblemsLoading] = useState(false);
+
+  useEffect(() => {
+    setVisits(initialVisits);
+    setVisitsPag(initialVisitsPag);
+  }, [initialVisits, initialVisitsPag]);
+
+  useEffect(() => {
+    setPrescriptions(initialPrescriptions);
+    setRxPag(initialRxPag);
+  }, [initialPrescriptions, initialRxPag]);
+
+  useEffect(() => {
+    setProblems(initialProblems);
+    setProblemsPag(initialProblemsPag);
+  }, [initialProblems, initialProblemsPag]);
+
   useEffect(() => {
     if (initialVitals && initialVitals.length > 0) {
       setMostRecentVital(initialVitals[0]);
     }
   }, [initialVitals]);
+
+  const handleVisitsPageChange = useCallback(
+    async (offset: number) => {
+      if (!patientId) return;
+      setVisitsLoading(true);
+      try {
+        const res = await getPatientVisits({
+          data: { patientId, offset, limit: 10, includeEvents: true },
+        });
+        setVisits(res.items);
+        setVisitsPag(res.pagination);
+      } catch (e) {
+        console.error("Failed to fetch visits page:", e);
+      } finally {
+        setVisitsLoading(false);
+      }
+    },
+    [patientId],
+  );
+
+  const handleRxPageChange = useCallback(
+    async (offset: number) => {
+      if (!patientId) return;
+      setRxLoading(true);
+      try {
+        const res = await getPatientPrescriptions({
+          data: { patientId, offset, limit: 10 },
+        });
+        setPrescriptions(res.items);
+        setRxPag(res.pagination);
+      } catch (e) {
+        console.error("Failed to fetch prescriptions page:", e);
+      } finally {
+        setRxLoading(false);
+      }
+    },
+    [patientId],
+  );
+
+  const handleProblemsPageChange = useCallback(
+    async (offset: number) => {
+      if (!patientId) return;
+      setProblemsLoading(true);
+      try {
+        const res = await getPatientProblems({
+          data: { patientId, offset, limit: 5 },
+        });
+        setProblems(res.items);
+        setProblemsPag(res.pagination);
+      } catch (e) {
+        console.error("Failed to fetch problems page:", e);
+      } finally {
+        setProblemsLoading(false);
+      }
+    },
+    [patientId],
+  );
 
   if (!isEditing || !patient) {
     toast.error("Patient not found");
@@ -153,12 +297,6 @@ function RouteComponent() {
     const first = givenName?.[0] || "";
     const last = surname?.[0] || "";
     return (first + last).toUpperCase() || "PT";
-  };
-
-  // Format vital value with unit
-  const formatVitalValue = (value: any, unit: string) => {
-    if (value === null || value === undefined) return "—";
-    return `${value} ${unit}`;
   };
 
   const handleEditAppointment = (appointmentId: Appointment.EncodedT["id"]) => {
@@ -292,153 +430,34 @@ function RouteComponent() {
       </div>
 
       {/* Vitals Section */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-lg">Current Vitals</CardTitle>
-            {mostRecentVital && (
-              <span className="text-sm text-muted-foreground">
-                Last recorded:{" "}
-                {format(
-                  new Date(mostRecentVital.timestamp),
-                  "MMM dd, yyyy HH:mm",
-                )}
-              </span>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent>
-          {mostRecentVital ? (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-              {/* Blood Pressure */}
-              <div className="p-4 border rounded-lg">
-                <div className="flex items-center mb-2">
-                  <Heart className="h-4 w-4 text-red-500 mr-2" />
-                  <span className="text-sm font-medium">Blood Pressure</span>
-                </div>
-                <p className="text-2xl font-bold">
-                  {mostRecentVital.systolic_bp && mostRecentVital.diastolic_bp
-                    ? `${mostRecentVital.systolic_bp}/${mostRecentVital.diastolic_bp}`
-                    : "—"}
-                </p>
-                <p className="text-xs text-muted-foreground">mmHg</p>
-              </div>
-
-              {/* Heart Rate */}
-              <div className="p-4 border rounded-lg">
-                <div className="flex items-center mb-2">
-                  <Activity className="h-4 w-4 text-pink-500 mr-2" />
-                  <span className="text-sm font-medium">Heart Rate</span>
-                </div>
-                <p className="text-2xl font-bold">
-                  {formatVitalValue(mostRecentVital.heart_rate, "")}
-                </p>
-                <p className="text-xs text-muted-foreground">bpm</p>
-              </div>
-
-              {/* Temperature */}
-              <div className="p-4 border rounded-lg">
-                <div className="flex items-center mb-2">
-                  <Thermometer className="h-4 w-4 text-orange-500 mr-2" />
-                  <span className="text-sm font-medium">Temperature</span>
-                </div>
-                <p className="text-2xl font-bold">
-                  {formatVitalValue(mostRecentVital.temperature_celsius, "")}
-                </p>
-                <p className="text-xs text-muted-foreground">°C</p>
-              </div>
-
-              {/* Oxygen Saturation */}
-              <div className="p-4 border rounded-lg">
-                <div className="flex items-center mb-2">
-                  <Droplets className="h-4 w-4 text-blue-500 mr-2" />
-                  <span className="text-sm font-medium">O₂ Saturation</span>
-                </div>
-                <p className="text-2xl font-bold">
-                  {formatVitalValue(mostRecentVital.oxygen_saturation, "")}
-                </p>
-                <p className="text-xs text-muted-foreground">%</p>
-              </div>
-
-              {/* Respiratory Rate */}
-              <div className="p-4 border rounded-lg">
-                <div className="flex items-center mb-2">
-                  <Wind className="h-4 w-4 text-teal-500 mr-2" />
-                  <span className="text-sm font-medium">Respiratory Rate</span>
-                </div>
-                <p className="text-2xl font-bold">
-                  {formatVitalValue(mostRecentVital.respiratory_rate, "")}
-                </p>
-                <p className="text-xs text-muted-foreground">breaths/min</p>
-              </div>
-
-              {/* Weight */}
-              <div className="p-4 border rounded-lg">
-                <div className="flex items-center mb-2">
-                  <Weight className="h-4 w-4 text-purple-500 mr-2" />
-                  <span className="text-sm font-medium">Weight</span>
-                </div>
-                <p className="text-2xl font-bold">
-                  {formatVitalValue(mostRecentVital.weight_kg, "")}
-                </p>
-                <p className="text-xs text-muted-foreground">kg</p>
-              </div>
-
-              {/* Height */}
-              <div className="p-4 border rounded-lg">
-                <div className="flex items-center mb-2">
-                  <Ruler className="h-4 w-4 text-green-500 mr-2" />
-                  <span className="text-sm font-medium">Height</span>
-                </div>
-                <p className="text-2xl font-bold">
-                  {formatVitalValue(mostRecentVital.height_cm, "")}
-                </p>
-                <p className="text-xs text-muted-foreground">cm</p>
-              </div>
-
-              {/* BMI */}
-              <div className="p-4 border rounded-lg">
-                <div className="flex items-center mb-2">
-                  <Brain className="h-4 w-4 text-indigo-500 mr-2" />
-                  <span className="text-sm font-medium">BMI</span>
-                </div>
-                <p className="text-2xl font-bold">
-                  {mostRecentVital.bmi
-                    ? parseFloat(mostRecentVital?.bmi)?.toFixed(1)
-                    : "—"}
-                </p>
-                <p className="text-xs text-muted-foreground">kg/m²</p>
-              </div>
-            </div>
-          ) : (
-            <div className="text-center py-8 text-muted-foreground">
-              No vitals recorded yet
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      <PatientVitalsCard vital={mostRecentVital} />
 
       {/* Tabs for Additional Information */}
       <Tabs defaultValue="visits" className="w-full">
-        <TabsList className="grid w-full grid-cols-4">
+        <TabsList className="grid w-full grid-cols-5">
           <TabsTrigger value="visits">Recent Visits</TabsTrigger>
+          <TabsTrigger value="problems">Problems</TabsTrigger>
           <TabsTrigger value="vitals">Vital History</TabsTrigger>
           <TabsTrigger value="prescriptions">Prescriptions</TabsTrigger>
           <TabsTrigger value="appointments">Appointments</TabsTrigger>
         </TabsList>
 
         <TabsContent value="visits">
-          <Card>
-            <CardHeader>
-              <CardTitle>Recent Visits</CardTitle>
-              <CardDescription>Patient's visit history</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="text-center py-8 text-muted-foreground">
-                No recent visits recorded
-              </div>
-            </CardContent>
-          </Card>
+          <RecentVisitsList
+            visits={visits}
+            pagination={visitsPag}
+            onPageChange={handleVisitsPageChange}
+            loading={visitsLoading}
+          />
+        </TabsContent>
+
+        <TabsContent value="problems">
+          <PatientProblemsList
+            problems={problems}
+            pagination={problemsPag}
+            onPageChange={handleProblemsPageChange}
+            loading={problemsLoading}
+          />
         </TabsContent>
 
         <TabsContent value="vitals">
@@ -497,17 +516,12 @@ function RouteComponent() {
         </TabsContent>
 
         <TabsContent value="prescriptions">
-          <Card>
-            <CardHeader>
-              <CardTitle>Prescriptions</CardTitle>
-              <CardDescription>Active and past medications</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="text-center py-8 text-muted-foreground">
-                No prescriptions recorded
-              </div>
-            </CardContent>
-          </Card>
+          <PrescriptionsList
+            prescriptions={prescriptions}
+            pagination={rxPag}
+            onPageChange={handleRxPageChange}
+            loading={rxLoading}
+          />
         </TabsContent>
 
         <TabsContent value="appointments">

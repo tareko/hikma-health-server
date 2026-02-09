@@ -20,6 +20,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { format } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { getEventForms } from "@/lib/server-functions/event-forms";
+import { getAllClinics } from "@/lib/server-functions/clinics";
 
 const deleteForm = createServerFn({ method: "POST" })
   .validator((d: { id: string }) => d)
@@ -51,15 +52,19 @@ const toggleFormDetail = createServerFn({ method: "POST" })
 export const Route = createFileRoute("/app/event-forms/")({
   component: RouteComponent,
   loader: async () => {
-    return {
-      forms: await getEventForms({ data: { includeDeleted: false } }),
-    };
+    const [forms, clinics] = await Promise.all([
+      getEventForms({ data: { includeDeleted: false } }),
+      getAllClinics(),
+    ]);
+    return { forms, clinics };
   },
 });
 
 function RouteComponent() {
-  const { forms } = Route.useLoaderData();
+  const { forms, clinics } = Route.useLoaderData();
   const route = useRouter();
+
+  const clinicMap = new Map(clinics.map((c) => [c.id, c.name]));
 
   const handleSnapshotToggle = (id: string, isSnapshot: boolean) => {
     toggleFormDetail({ data: { id, field: "snapshot", value: isSnapshot } })
@@ -116,6 +121,7 @@ function RouteComponent() {
                 <TableHead>Editable</TableHead>
                 <TableHead>Name</TableHead>
                 <TableHead>Description</TableHead>
+                <TableHead>Clinics</TableHead>
                 <TableHead>Created</TableHead>
                 <TableHead>Updated</TableHead>
                 <TableHead>Actions</TableHead>
@@ -124,7 +130,7 @@ function RouteComponent() {
             <TableBody>
               {forms.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center">
+                  <TableCell colSpan={8} className="text-center">
                     No forms available
                   </TableCell>
                 </TableRow>
@@ -149,6 +155,13 @@ function RouteComponent() {
                     </TableCell>
                     <TableCell>{form.name || "—"}</TableCell>
                     <TableCell>{form.description || "—"}</TableCell>
+                    <TableCell>
+                      {!form.clinic_ids || form.clinic_ids.length === 0
+                        ? "All"
+                        : form.clinic_ids
+                            .map((id) => clinicMap.get(id) ?? id)
+                            .join(", ")}
+                    </TableCell>
                     <TableCell>
                       {format(form.created_at, "yyyy-MM-dd")}
                     </TableCell>
