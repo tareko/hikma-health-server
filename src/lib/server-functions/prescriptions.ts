@@ -3,6 +3,9 @@ import Prescription from "@/models/prescription";
 import Patient from "@/models/patient";
 import Clinic from "@/models/clinic";
 import User from "@/models/user";
+import { userRoleTokenHasCapability } from "../auth/request";
+import type { Pagination } from "./builders";
+import * as Sentry from "@sentry/tanstackstart-react";
 
 /**
  * Get all prescriptions
@@ -12,7 +15,7 @@ const getAllPrescriptions = createServerFn({ method: "GET" }).handler(
   async (): Promise<Prescription.EncodedT[]> => {
     const res = await Prescription.API.getAll();
     return res;
-  }
+  },
 );
 
 /**
@@ -32,7 +35,7 @@ const getAllPrescriptionsWithDetails = createServerFn({
   > => {
     const res = await Prescription.API.getAllWithDetails();
     return res;
-  }
+  },
 );
 
 /**
@@ -47,8 +50,62 @@ const togglePrescriptionStatus = createServerFn({ method: "POST" })
     await Prescription.API.toggleStatus(data.id, data.status);
   });
 
+/**
+ * Get paginated prescriptions for a patient.
+ */
+const getPatientPrescriptions = createServerFn({ method: "GET" })
+  .validator(
+    (data: { patientId: string; offset?: number; limit?: number }) => data,
+  )
+  .handler(
+    async ({
+      data,
+    }): Promise<{
+      items: Prescription.EncodedT[];
+      pagination: Pagination;
+      error: string | null;
+    }> => {
+      const authorized = await userRoleTokenHasCapability([
+        User.CAPABILITIES.READ_ALL_PATIENT,
+      ]);
+
+      if (!authorized) {
+        return Promise.reject({
+          message: "Unauthorized: Insufficient permissions",
+          source: "getPatientPrescriptions",
+        });
+      }
+
+      try {
+        const result = await Prescription.API.getByPatientId({
+          patientId: data.patientId,
+          limit: data.limit ?? 10,
+          offset: data.offset ?? 0,
+          includeCount: true,
+        });
+
+        return {
+          items: result.items,
+          pagination: result.pagination,
+          error: null,
+        };
+      } catch (error) {
+        Sentry.captureException(error);
+        return {
+          items: [],
+          pagination: { offset: 0, limit: 10, total: 0, hasMore: false },
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to fetch prescriptions",
+        };
+      }
+    },
+  );
+
 export {
   getAllPrescriptions,
   getAllPrescriptionsWithDetails,
   togglePrescriptionStatus,
+  getPatientPrescriptions,
 };
