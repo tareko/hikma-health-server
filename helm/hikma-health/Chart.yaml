@@ -1,0 +1,12 @@
+apiVersion: v2
+name: hikma-health
+description: Hikma Health Server — open-source electronic health records
+type: application
+version: 0.1.0
+appVersion: "2025.11.22"
+keywords:
+  - ehr
+  - health
+  - hikma
+maintainers:
+  - name: Hikma Health
