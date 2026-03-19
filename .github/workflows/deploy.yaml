@@ -1,0 +1,71 @@
+name: Deploy to DigitalOcean Kubernetes
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        run: |
+          IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          IMAGE_LC=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
+          docker build \
+            -t $IMAGE_LC:${{ github.sha }} \
+            -t $IMAGE_LC:latest \
+            .
+          docker push $IMAGE_LC:${{ github.sha }}
+          docker push $IMAGE_LC:latest
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Save DOKS kubeconfig
+        run: doctl kubernetes cluster kubeconfig save ${{ secrets.DOKS_CLUSTER_NAME }}
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Deploy with Helm
+        run: |
+          IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          IMAGE_LC=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
+          helm upgrade --install hikma helm/hikma-health-server/ \
+            --namespace hikma \
+            --create-namespace \
+            --set image.repository=$IMAGE_LC \
+            --set image.tag=${{ github.sha }} \
+            --values helm/hikma-health-server/values.yaml \
+            ${{ secrets.HELM_EXTRA_ARGS }} \
+            --wait \
+            --timeout 10m
+
+      - name: Verify deployment
+        run: |
+          kubectl rollout status deployment/hikma-hikma-health-server -n hikma --timeout=300s

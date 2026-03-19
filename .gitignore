@@ -11,6 +11,7 @@ count.txt
 
 .env.*
 
+.devcontainer
 
 .tanstack/*
 
