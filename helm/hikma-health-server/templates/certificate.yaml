@@ -1,0 +1,15 @@
+{{- if and .Values.gateway.enabled .Values.gateway.tls.enabled }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "hikma-health-server.fullname" . }}-tls
+  labels:
+    {{- include "hikma-health-server.labels" . | nindent 4 }}
+spec:
+  secretName: {{ .Values.gateway.tls.secretName }}
+  issuerRef:
+    name: {{ .Values.gateway.tls.issuerRef.name }}
+    kind: {{ .Values.gateway.tls.issuerRef.kind }}
+  dnsNames:
+    - {{ .Values.gateway.hostname | quote }}
+{{- end }}

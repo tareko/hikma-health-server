@@ -220,6 +220,12 @@ hikma-health-server/
 - Use HTTPS in production environments
 
 
+## Deploying to Kubernetes
+
+See [KUBERNETES.md](KUBERNETES.md) for full instructions on deploying to a DigitalOcean Kubernetes cluster with automated CI/CD via GitHub Actions.
+
+---
+
 ## Contributing
 
 We welcome contributions! Please ensure:

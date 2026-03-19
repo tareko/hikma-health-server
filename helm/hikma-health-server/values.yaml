@@ -1,0 +1,120 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/hikma-health/hikma-health-server
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+  automountServiceAccountToken: false
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 3000
+
+gateway:
+  enabled: false
+  # Name of the Gateway resource to attach the HTTPRoute to.
+  # This Gateway must already exist in the cluster.
+  gatewayName: public-gateway
+  # Namespace of the Gateway (leave empty for same namespace)
+  gatewayNamespace: ""
+  # Hostname for routing
+  hostname: health.glia.org
+  # TLS via cert-manager: create a Certificate resource for the Gateway
+  tls:
+    enabled: true
+    issuerRef:
+      name: letsencrypt-prod
+      kind: ClusterIssuer
+    secretName: hikma-tls
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+# Non-sensitive environment variables
+config:
+  APP_ENV: production
+  DB_SSL: "true"
+  NODE_ENV: production
+  PORT: "3000"
+
+# Sensitive environment variables (only used if existingSecret is not set)
+# DATABASE_URL is constructed from these fields, or set directly below.
+# For DigitalOcean managed Postgres, the port is typically 25060.
+secrets:
+  DATABASE_URL: ""
+  # Alternatively, provide individual fields and the chart will build DATABASE_URL:
+  # DB_HOST: ""
+  # DB_PORT: "25060"
+  # DB_NAME: ""
+  # DB_USER: ""
+  # DB_PASSWORD: ""
+
+# Use an existing Kubernetes secret instead of creating one from values above.
+# The secret must contain a DATABASE_URL key.
+# Recommended for production — create it manually or via External Secrets / Sealed Secrets:
+#   kubectl create secret generic hikma-db-secret -n hikma \
+#     --from-literal=DATABASE_URL="postgresql://user:pass@host:25060/dbname?sslmode=require"
+existingSecret: ""
+
+persistence:
+  enabled: false
+  storageClass: do-block-storage
+  accessModes:
+    - ReadWriteOnce
+  size: 10Gi
+  mountPath: /app/photos
+
+networkPolicy:
+  enabled: false
+  # DigitalOcean managed PostgreSQL port
+  postgresPort: 25060
+  # Additional egress rules
+  additionalEgress: []
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podAnnotations: {}
+podLabels: {}
+
+securityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  runAsNonRoot: true
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL

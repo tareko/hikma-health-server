@@ -1,0 +1,59 @@
+Hikma Health Server has been deployed!
+
+1. Get the application URL:
+{{- if .Values.gateway.enabled }}
+  https://{{ .Values.gateway.hostname }}
+
+  Ensure your DNS points {{ .Values.gateway.hostname }} to the Gateway's external IP:
+    kubectl get gateway {{ .Values.gateway.gatewayName }} {{ if .Values.gateway.gatewayNamespace }}-n {{ .Values.gateway.gatewayNamespace }}{{ end }} -o jsonpath='{.status.addresses[0].value}'
+{{- else if contains "ClusterIP" .Values.service.type }}
+  kubectl port-forward svc/{{ include "hikma-health-server.fullname" . }} 3000:{{ .Values.service.port }} -n {{ .Release.Namespace }}
+  Then visit: http://localhost:3000
+{{- end }}
+
+2. Check pod status:
+  kubectl get pods -l "app.kubernetes.io/name={{ include "hikma-health-server.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -n {{ .Release.Namespace }}
+
+3. View logs:
+  kubectl logs -l "app.kubernetes.io/name={{ include "hikma-health-server.name" . }}" -n {{ .Release.Namespace }} -f
+
+IMPORTANT NOTES:
+
+- The startup probe allows up to ~310s for database migrations to complete.
+  If your migrations take longer, increase startupProbe.failureThreshold in the deployment.
+
+- No dedicated health endpoint exists yet. Probes use "/" (the login page).
+  Consider adding a lightweight /healthz endpoint for more efficient health checks.
+
+{{- if .Values.persistence.enabled }}
+
+- Photo storage uses a PersistentVolumeClaim with do-block-storage (ReadWriteOnce).
+  This means only ONE node can mount the volume at a time. For multi-replica photo
+  writes, migrate to DigitalOcean Spaces (S3-compatible object storage).
+{{- end }}
+
+- DATABASE_URL should point to your DigitalOcean managed PostgreSQL instance.
+  Typical format: postgresql://user:password@host:25060/dbname?sslmode=require
+
+{{- if .Values.existingSecret }}
+
+- Using existing secret "{{ .Values.existingSecret }}" for sensitive environment variables.
+{{- else }}
+
+- Secrets are managed via Helm values. For production, consider using an external
+  secret manager (Sealed Secrets, External Secrets Operator) with existingSecret.
+{{- end }}
+
+{{- if .Values.gateway.enabled }}
+
+GATEWAY API PREREQUISITES:
+
+  Your cluster needs the following before this chart's HTTPRoute will work:
+
+  1. A Gateway API implementation (e.g. Envoy Gateway, Cilium, Istio, NGINX Gateway Fabric)
+  2. The Gateway API CRDs installed:
+       kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/latest/download/standard-install.yaml
+  3. A Gateway resource named "{{ .Values.gateway.gatewayName }}" with an HTTPS listener
+     referencing the TLS secret "{{ .Values.gateway.tls.secretName }}"
+  4. cert-manager installed with a ClusterIssuer named "{{ .Values.gateway.tls.issuerRef.name }}"
+{{- end }}
